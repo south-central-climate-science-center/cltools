@@ -1,0 +1,52 @@
+#!/opt/miniconda3/bin/python
+
+import sys
+import re
+import calendar
+from datetime import datetime
+
+file_list = sys.stdin.read().strip().split("\n")
+if file_list == ['']:
+    print("no files listed")
+    exit(2)
+
+date_range_rgx = re.compile("\d{6,8}-\d{6,8}")
+dates = sorted(date_range_rgx.findall(x)[0] for x in file_list)
+
+if dates != set(dates):
+    print("Duplicate date ranges detected")
+    exit(2)
+
+consecutive = True
+for index in range(0, len(dates), 2):
+    # Determine the format of the date field: YYYYMMDD, YYYYMM
+    min_field = dates[index].split("-")[-1]
+    max_field = dates[index + 1].split("-")[0]
+    min_format = "%Y%m" if len(min_field) == 6 else "%Y%m%d"
+    max_format = "%Y%m" if len(max_field) == 6 else "%Y%m%d"
+    min_date = datetime.strptime(min_field, min_format)
+    max_date = datetime.strptime(max_field, max_format)
+    
+    if len(min_field) == 6:
+        # compare difference with number of days in month of min_date
+        days_in_month = calendar.monthlen(month=min_date.month, year=min_date.year)
+        if max_date.toordinal() - min_date.toordinal() != days_in_month:
+            consecutive = False
+            print("Missing range between: {0}, {1}".format(min_date, max_date))
+            break
+    elif len(min_field) == 8:
+        if max_date.toordinal() - min_date.toordinal() != 1:
+            consecutive = False
+            print("Missing range between: {0}, {1}".format(min_date, max_date))
+            break
+    else:
+        consecutive = False
+        print("Date field is not recognized")
+        break
+        
+if consecutive:
+    print("files are consecutive")
+    exit(0)
+else:
+    print("files are not consecutive")
+    exit(1)

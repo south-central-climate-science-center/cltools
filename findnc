@@ -1,0 +1,80 @@
+#!/usr/bin/env python
+
+__author__ = "Tyler Pearson <tdpearson>"
+
+from sys import argv, stderr
+import pandas as pd
+
+usage = """
+usage: findnc [field=value]
+
+This tool searches for netcdf files with specified attributes
+
+examples:
+  
+  Return list of filenames based off of specified arguments
+    findnc variable=uas domain=Amon experiment=rcp45 model=MRI-CGCM3
+
+  List all available model variables
+    findnc variable?
+
+  List avaialble domains for variable 'ta'
+    findnc variable=ta domain?
+"""
+
+## The following file is used to lookup file paths
+csv_file = "climatedata_full_CMIP5_internal.csv"
+
+## Replace file_path_column and input_file with the following 2 lines if this script is being run on schooner
+#file_path_column = "OSCER_schooner_path"
+#input_file = "/condo/climatedata3/static_web/{0}".format(csv_file)
+file_path_column = "SCCASC_climatedata_path"
+input_file = "/data/static_web/{0}".format(csv_file)
+
+try:
+    df = pd.read_csv(input_file, dtype=str)
+except FileNotFoundError:
+    stderr.write("Could not open file: {0}\n".format(input_file))
+    exit(1)
+
+columns = sorted(df.columns.tolist())
+
+if len(argv) == 1:
+    print(usage)
+    print("Available fields:\n\t{0}".format(", ".join(columns)))
+    exit(0)
+#input_file = argv[1]
+#args = argv[2:]
+args = argv[1:]
+
+# Check provided args
+provided_args = set(x.split("=")[0] for x in args if "?" not in x)
+for provided_arg in provided_args:
+    if provided_arg not in columns:
+        stderr.write("'{0}' is not a searchable field\n".format(provided_arg))
+        exit(2)
+
+get_available_values = []
+for arg in args:
+    if "?" in arg:
+        formatted_arg = arg.replace("?", "")
+        if formatted_arg in columns:
+            get_available_values.append(formatted_arg)
+        else:
+            stderr.write("'{0}' is not a searchable field\n".format(formatted_arg))
+            exit(2)
+    else:
+        try:
+            attr, value = arg.split("=")
+            df = df[df[attr] == value]
+        except ValueError:
+            stderr.write("Could not parse argument: {0}\n".format(arg))
+
+for arg in get_available_values:
+    available_attrs = ", ".join(x for x in sorted(set(df[arg].fillna(""))) if x)
+    if available_attrs:
+        print(arg + ": " + available_attrs)
+
+if not get_available_values:
+    for item in df[file_path_column]:
+        print(item)
