@@ -13,7 +13,7 @@ if file_list == ['']:
 date_range_rgx = re.compile("\d{6,8}-\d{6,8}")
 dates = sorted(date_range_rgx.findall(x)[0] for x in file_list)
 
-if dates != set(dates):
+if len(dates) != len(set(dates)):
     print("Duplicate date ranges detected")
     exit(2)
 
