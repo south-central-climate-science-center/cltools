@@ -1,0 +1,119 @@
+#!/usr/bin/env python
+
+import re
+import pandas as pd
+from subprocess import check_output
+from json import loads
+from os.path import getsize
+from sqlite3 import Connection
+
+ncks_cmd = "/data/anaconda3/bin/ncks --json -m -M {0}"
+
+db_paths = [
+    "/var/lib/synda/sdt/sdt.db",
+    "/data2/synda/sdt/db/sdt.db"
+]
+
+hash_results_path = "/opt/ul_informatics/data/hash_results.csv"
+
+# Limited to just CMIP5 items
+sql = """
+select f.url, f.data_node, f.variable, d.path, d.path_without_version, d.version, d.latest, d.template
+from file as f, dataset as d
+where d.dataset_id = f.dataset_id
+and d.project = 'CMIP5';
+"""
+
+
+def sqlite_to_df(db_path, sql):
+    """ pandas dataframe from sqlite db
+        db_path = path to sqlite db file
+        sql = sql query """
+    con = Connection(db_path)
+    return pd.read_sql(sql, con)
+
+
+def nc_attribute(row, attr):
+    return row['nc_attributes']['attributes'].get(attr, None)
+
+
+def string_to_dict(string, pattern):
+    """ this uses the template record in the synda db to parse
+        attributes from the corresponding file name """
+    regex = re.sub(r'\.%\((.+?)\)s', r'/(?P<_\1>.+)', pattern)
+    matches = re.search(regex, string)
+    if matches:
+        values = list(matches.groups())
+        keys = re.findall(r'\.%\((.+?)\)s', pattern)
+        return dict(zip(keys, values))
+
+
+print("Loading details from sqlite databases into dataframe")
+# combine sqlite dbs into one dataframe
+df_sql = pd.concat([sqlite_to_df(db, sql) for db in db_paths])
+
+print("Formating attributes and adding to individual columns")
+# split out attributes
+df_attribs = df_sql.apply(lambda x: string_to_dict(x.path_without_version, x.template), axis=1, result_type="expand")
+df_sql = pd.concat([df_sql,df_attribs], axis=1, sort=False)
+
+print("Creating file column")
+df_sql['file'] = df_sql.apply(lambda x: x.url.split("/")[-1], axis=1)
+
+print("Reading in hash_file")
+df_files = pd.read_csv(hash_results_path)
+# Uncomment the following line to limit dataframe to the last 200 items
+#df_files = df_files.tail(n=200)
+df_files['file'] = df_files.apply(lambda x: x.filename.split("/")[-1], axis=1)
+df_merged = pd.merge(df_files, df_sql, on="file", how="left")
+df_merged["checksum"] = df_merged.hash
+df_merged["checksum_type"] = "sha256"
+df_merged["local_file"] = df_merged.filename
+df_merged["filename"] = df_merged.apply(lambda x: x.filename.split("/")[-1], axis=1)
+df_merged['time'] = df_merged.apply(lambda x: x.filename.split("_")[-1].split(".")[0], axis=1)
+df_merged['variable'] = df_merged.apply(lambda x: x.filename.split("_")[0], axis=1)
+df_merged['version'] = df_merged.apply(lambda x: x.local_file.split("/")[-3], axis=1)
+df_merged["size"] = df_merged.apply(lambda x: getsize(x.local_file), axis=1)
+df_merged["nc_attributes"] = df_merged.apply(lambda x: loads(check_output(ncks_cmd.format(x.local_file).split(" "))), axis=1)
+df_merged["realm"] = df_merged.apply(lambda x: nc_attribute(x, "modeling_realm"), axis=1)
+df_merged["experiment"] = df_merged.apply(lambda x: nc_attribute(x, "experiment_id"), axis=1)
+df_merged["time_frequency"] = df_merged.apply(lambda x: nc_attribute(x, "frequency"), axis=1)
+df_merged["product"] = df_merged.apply(lambda x: nc_attribute(x, "product"), axis=1)
+# TODO: the following line assumes we are pulling only CMIP5 records, change to get detail from row if this is no longer the case
+df_merged["project"] = "CMIP5"
+df_merged["model"] = df_merged.apply(lambda x: nc_attribute(x, "model_id"), axis=1)
+df_merged["institute"] = df_merged.apply(lambda x: nc_attribute(x, "institute_id"), axis=1)
+df_merged["ensemble"] = df_merged.apply(lambda x: nc_attribute(x, "parent_experiment_rip"), axis=1)
+df_merged["creation_date"] = df_merged.apply(lambda x: nc_attribute(x, "creation_date"), axis=1)
+
+# TODO: confirm this is correct
+df_merged['domain'] = df_merged['time_frequency']
+
+# setup site specific file paths
+df_merged['SCCASC_climatedata_path'] = df_merged['local_file']
+def format_oscer_path(file_path):
+    split_path = file_path.split("/")
+    split_path[0] = "condo"
+    if split_path[1] == "data":
+        split_path[1] = "climatedata3"
+    else:
+        split_path[1] = "climate" + split_path[1]
+    return "/" + "/".join(split_path)
+df_merged['OSCER_schooner_path'] = df_merged['local_file'].apply(format_oscer_path)
+
+# Select which columns to include in output
+#headers = [
+#    "variable", "variable_long_name", "institute", "model", "domain", "dimensions",
+#    "project", "realm", "ensemble", "experiment", "time_frequency", "time", "product",
+#    "version", "filename", "size", "OSCER_schooner_path", "SCCASC_climatedata_path",
+#    "checksum_type", "checksum", "creation_date"
+#]
+headers = [
+    "variable", "variable_standard_name", "variable_long_name", "institute", "model",
+    "domain", "dimensions", "project", "realm", "ensemble", "experiment", "time_frequency",
+    "time", "product", "version", "filename", "size", "OSCER_schooner_path",
+    "SCCASC_climatedata_path", "checksum_type", "checksum"
+]
+# Write out results
+df_merged.to_csv("cmip5_list.csv", index=False, columns=headers)
+print("Wrote results to cmip5_list.csv")
